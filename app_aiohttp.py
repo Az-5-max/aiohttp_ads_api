@@ -1,27 +1,27 @@
 from aiohttp import web
-import sqlite3
+import aiosqlite
 from datetime import datetime
 
-
-def get_db():
-    conn = sqlite3.connect('ads.db')
-    conn.row_factory = sqlite3.Row
-    return conn
+DB_PATH = 'ads.db'
 
 
-def init_db():
-    conn = get_db()
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS ads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            description TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            owner TEXT NOT NULL
-        )
-    ''')
-    conn.commit()
-    conn.close()
+async def init_db(app):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS ads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                owner TEXT NOT NULL
+            )
+        ''')
+        await db.commit()
+    app['db'] = DB_PATH
+
+
+async def cleanup_db(app):
+    pass
 
 
 async def create_ad(request):
@@ -30,88 +30,123 @@ async def create_ad(request):
     if not data.get('title') or not data.get('description') or not data.get('owner'):
         return web.json_response({'error': 'Нужны title, description, owner'}, status=400)
 
-    conn = get_db()
-    cursor = conn.execute(
-        'INSERT INTO ads (title, description, created_at, owner) VALUES (?, ?, ?, ?)',
-        (data['title'], data['description'], datetime.utcnow().isoformat(), data['owner'])
-    )
-    ad_id = cursor.lastrowid
-    conn.commit()
+    async with aiosqlite.connect(request.app['db']) as db:
+        cursor = await db.execute(
+            'INSERT INTO ads (title, description, created_at, owner) VALUES (?, ?, ?, ?)',
+            (data['title'], data['description'], datetime.utcnow().isoformat(), data['owner'])
+        )
+        ad_id = cursor.lastrowid
+        await db.commit()
 
-    cursor = conn.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
-    ad = cursor.fetchone()
-    conn.close()
+        cursor = await db.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
+        row = await cursor.fetchone()
 
-    return web.json_response(dict(ad), status=201)
+    return web.json_response({
+        'id': row[0],
+        'title': row[1],
+        'description': row[2],
+        'created_at': row[3],
+        'owner': row[4]
+    }, status=201)
+
+
+async def get_all_ads(request):
+    async with aiosqlite.connect(request.app['db']) as db:
+        cursor = await db.execute('SELECT * FROM ads')
+        rows = await cursor.fetchall()
+
+    result = [
+        {
+            'id': row[0],
+            'title': row[1],
+            'description': row[2],
+            'created_at': row[3],
+            'owner': row[4]
+        }
+        for row in rows
+    ]
+    return web.json_response(result, status=200)
 
 
 async def get_ad(request):
     ad_id = int(request.match_info['ad_id'])
-    conn = get_db()
-    cursor = conn.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
-    ad = cursor.fetchone()
-    conn.close()
 
-    if not ad:
+    async with aiosqlite.connect(request.app['db']) as db:
+        cursor = await db.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
+        row = await cursor.fetchone()
+
+    if not row:
         return web.json_response({'error': 'Объявление не найдено'}, status=404)
 
-    return web.json_response(dict(ad), status=200)
+    return web.json_response({
+        'id': row[0],
+        'title': row[1],
+        'description': row[2],
+        'created_at': row[3],
+        'owner': row[4]
+    }, status=200)
 
 
 async def update_ad(request):
     ad_id = int(request.match_info['ad_id'])
     data = await request.json()
 
-    conn = get_db()
-    cursor = conn.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
-    ad = cursor.fetchone()
+    async with aiosqlite.connect(request.app['db']) as db:
+        cursor = await db.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
+        row = await cursor.fetchone()
 
-    if not ad:
-        conn.close()
-        return web.json_response({'error': 'Объявление не найдено'}, status=404)
+        if not row:
+            return web.json_response({'error': 'Объявление не найдено'}, status=404)
 
-    conn.execute(
-        'UPDATE ads SET title = ?, description = ?, owner = ? WHERE id = ?',
-        (
-            data.get('title', ad['title']),
-            data.get('description', ad['description']),
-            data.get('owner', ad['owner']),
-            ad_id
+        await db.execute(
+            'UPDATE ads SET title = ?, description = ?, owner = ? WHERE id = ?',
+            (
+                data.get('title', row[1]),
+                data.get('description', row[2]),
+                data.get('owner', row[4]),
+                ad_id
+            )
         )
-    )
-    conn.commit()
+        await db.commit()
 
-    cursor = conn.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
-    ad = cursor.fetchone()
-    conn.close()
+        cursor = await db.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
+        row = await cursor.fetchone()
 
-    return web.json_response(dict(ad), status=200)
+    return web.json_response({
+        'id': row[0],
+        'title': row[1],
+        'description': row[2],
+        'created_at': row[3],
+        'owner': row[4]
+    }, status=200)
 
 
 async def delete_ad(request):
     ad_id = int(request.match_info['ad_id'])
-    conn = get_db()
-    cursor = conn.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
-    ad = cursor.fetchone()
 
-    if not ad:
-        conn.close()
-        return web.json_response({'error': 'Объявление не найдено'}, status=404)
+    async with aiosqlite.connect(request.app['db']) as db:
+        cursor = await db.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
+        row = await cursor.fetchone()
 
-    conn.execute('DELETE FROM ads WHERE id = ?', (ad_id,))
-    conn.commit()
-    conn.close()
+        if not row:
+            return web.json_response({'error': 'Объявление не найдено'}, status=404)
+
+        await db.execute('DELETE FROM ads WHERE id = ?', (ad_id,))
+        await db.commit()
 
     return web.json_response({'message': 'Удалено'}, status=200)
 
 
 app = web.Application()
+app.on_startup.append(init_db)
+app.on_cleanup.append(cleanup_db)
+
 app.router.add_post('/ads', create_ad)
+app.router.add_get('/ads', get_all_ads)
 app.router.add_get('/ads/{ad_id}', get_ad)
 app.router.add_put('/ads/{ad_id}', update_ad)
 app.router.add_delete('/ads/{ad_id}', delete_ad)
 
 
 if __name__ == '__main__':
-    init_db()
     web.run_app(app, host='127.0.0.1', port=5000)
